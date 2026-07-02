@@ -1,0 +1,18 @@
+[project]
+name = "lpsgld-jax"
+version = "0.1.0"
+description = "JAX/Equinox port of Low-Precision SGLD (Zhang, Wilson & De Sa, ICML 2022)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "jax>=0.4.30",
+    "equinox>=0.11",
+    "optax>=0.2",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7", "scipy>=1.10"]
+
+[tool.setuptools.packages.find]
+include = ["lpsgld_jax*"]

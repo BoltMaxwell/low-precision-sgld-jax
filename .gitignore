@@ -1,0 +1,20 @@
+# Datasets (download with `python -m lpsgld_jax.download`)
+data/
+*.tar.gz
+
+# Cluster run artifacts
+.codex/
+
+# Saved samples / checkpoints / outputs
+runs/
+checkpoints/
+*.eqx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
