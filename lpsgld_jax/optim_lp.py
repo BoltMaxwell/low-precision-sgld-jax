@@ -21,8 +21,8 @@ Quantization is applied per pytree leaf with an independent stochastic-rounding 
 import jax
 import jax.numpy as jnp
 
-from .quant import fixed_point_quantize
-from .vc import Q_vc
+from .quant import block_quantize, fixed_point_quantize
+from .vc import Q_vc, Q_vc_block
 
 
 def _tree_map_keyed(fn, tree, key):
@@ -38,42 +38,51 @@ def _tree_gaussian(key, tree, std):
     return jax.tree_util.tree_unflatten(treedef, noise)
 
 
-def make_lp_update(variant, wl, fl, *, weight_decay, temperature, datasize, noise=True):
-    def qfix(x, k):
-        return fixed_point_quantize(x, wl, fl, "stochastic", k)
+def make_lp_update(variant, wl, fl, *, weight_decay, temperature, datasize, noise=True,
+                   number="fixed"):
+    # base quantizer for weights/grads, and the VC quantizer, per number format
+    if number == "fixed":
+        def quant(x, k):
+            return fixed_point_quantize(x, wl, fl, "stochastic", k)
+
+        def vc_quant(k, x, var):
+            return Q_vc(k, x, var, wl, fl)
+    elif number == "block":
+        def quant(x, k):
+            return block_quantize(x, wl, "stochastic", k, dim=0)
+
+        def vc_quant(k, x, var):
+            return Q_vc_block(k, x, var, wl)
+    else:
+        raise ValueError(f"unknown number format {number!r}")
 
     def forward_quant(key, params):
         # SGLDLP-F keeps a full-precision accumulator, so quantize for the forward
         # pass; the -L variants already hold low-precision weights.
         if variant == "sgldlp_f":
-            return _tree_map_keyed(qfix, params, key)
+            return _tree_map_keyed(quant, params, key)
         return params
 
     def update(key, params, grads, lr):
         kg, kn, kw = jax.random.split(key, 3)
-        qgrads = _tree_map_keyed(qfix, grads, kg)
+        qgrads = _tree_map_keyed(quant, grads, kg)
         var = 2.0 * lr * temperature / datasize if noise else 0.0
 
         def gd(p, g):  # gradient + weight-decay step
             return p - lr * (g + weight_decay * p)
 
-        if variant == "sgldlp_f":
+        if variant in ("sgldlp_f", "naive"):
             stepped = jax.tree_util.tree_map(gd, params, qgrads)
             if noise:
                 gn = _tree_gaussian(kn, params, jnp.sqrt(var))
                 stepped = jax.tree_util.tree_map(lambda p, n: p + n, stepped, gn)
-            return stepped  # full-precision accumulator
-        if variant == "naive":
-            stepped = jax.tree_util.tree_map(gd, params, qgrads)
-            if noise:
-                gn = _tree_gaussian(kn, params, jnp.sqrt(var))
-                stepped = jax.tree_util.tree_map(lambda p, n: p + n, stepped, gn)
-            return _tree_map_keyed(qfix, stepped, kw)  # low-precision accumulator
+            # SGLDLP-F: full-precision accumulator; naive: quantize the accumulator
+            return stepped if variant == "sgldlp_f" else _tree_map_keyed(quant, stepped, kw)
         if variant == "vc":
             mu = jax.tree_util.tree_map(gd, params, qgrads)
             if not noise:
-                return _tree_map_keyed(qfix, mu, kw)
-            return _tree_map_keyed(lambda x, k: Q_vc(k, x, var, wl, fl), mu, kw)
+                return _tree_map_keyed(quant, mu, kw)
+            return _tree_map_keyed(lambda x, k: vc_quant(k, x, var), mu, kw)
         raise ValueError(f"unknown variant {variant!r}")
 
     return forward_quant, update

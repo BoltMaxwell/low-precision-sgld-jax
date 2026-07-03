@@ -73,6 +73,7 @@ def train(
     temperature=0.001,
     wl=8,
     fl=8,
+    number="fixed",
     lr_type="cyclic",
     M=7,
     num_savemodel=35,
@@ -95,7 +96,8 @@ def train(
     schedule_fn = build_schedule(lr_init, lr_type, total_steps=total_steps,
                                  num_batch=num_batch, epochs=epochs, M=M)
     forward_quant, update = make_lp_update(variant, wl, fl, weight_decay=weight_decay,
-                                           temperature=temperature, datasize=datasize, noise=noise)
+                                           temperature=temperature, datasize=datasize,
+                                           noise=noise, number=number)
     step = build_epoch_step(static, augment, schedule_fn, forward_quant, update)
     run_epoch = eqx.filter_jit(partial(jax.lax.scan, step))
     to_save = save_epochs(epochs, lr_type, M, num_savemodel, noise)
@@ -133,6 +135,7 @@ def main():
     p.add_argument("--temperature", type=float, default=0.001)
     p.add_argument("--wl", type=int, default=8)
     p.add_argument("--fl", type=int, default=8)
+    p.add_argument("--number", default="fixed", choices=["fixed", "block"])
     p.add_argument("--lr_type", default="cyclic", choices=["cyclic", "decay"])
     p.add_argument("--M", type=int, default=7)
     p.add_argument("--num_savemodel", type=int, default=35)
@@ -143,7 +146,8 @@ def main():
     data = load_cifar(args.data_path, args.dataset)
     train(data, variant=args.variant, dataset=args.dataset, epochs=args.epochs,
           batch_size=args.batch_size, lr_init=args.lr, weight_decay=args.wd,
-          temperature=args.temperature, wl=args.wl, fl=args.fl, lr_type=args.lr_type,
+          temperature=args.temperature, wl=args.wl, fl=args.fl, number=args.number,
+          lr_type=args.lr_type,
           M=args.M, num_savemodel=args.num_savemodel, noise=not args.no_noise,
           seed=args.seed, save_dir=args.save_dir)
 

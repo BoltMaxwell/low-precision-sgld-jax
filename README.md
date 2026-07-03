@@ -90,30 +90,34 @@ variance (std **1.30**); VC corrects it (std **1.00**) — reproducing the paper
 
 **CIFAR-10 / ResNet18**, 8-bit, 245 epochs, ensemble of samples (H100):
 
-| variant | BMA accuracy | error % | ECE % |
-|---|---|---|---|
-| SGLDLP-F (full-precision accumulator) | **94.79%** | 5.21 | 1.45 |
-| VC SGLDLP-L | 93.32% | 6.68 | **1.44** |
-| naive SGLDLP-L | 92.89% | 7.11 | 2.21 |
+| variant | number format | BMA accuracy | error % | ECE % |
+|---|---|---|---|---|
+| SGLDLP-F (full-precision accumulator) | fixed | **94.79%** | 5.21 | 1.45 |
+| **VC SGLDLP-L** | **block-FP** | **94.66%** | 5.34 | **0.58** |
+| VC SGLDLP-L | fixed | 93.32% | 6.68 | 1.44 |
+| naive SGLDLP-L | fixed | 92.89% | 7.11 | 2.21 |
 
-8-bit SGLD reaches ~95% (near full-precision SGLD). **VC beats naive** on both accuracy
-and — the point of the method — **calibration** (ECE 1.44 vs 2.21%): correcting the
-quantization variance yields better-calibrated uncertainty.
+**Block-FP VC SGLDLP-L matches full-precision-accumulator SGLD** (94.66 vs 94.79%, a
+0.13% gap) with a *low-precision* accumulator — the paper's headline. It also has the
+**best calibration** (ECE 0.58%). Block floating point gives each channel a grid matched
+to its own magnitude, closing the ~1.5% gap that fixed-point VC leaves. Across the board,
+**VC beats naive** on accuracy and — the point of the method — calibration (correcting the
+quantization variance yields better-calibrated uncertainty). Select with `--number block`.
 
 ## Scope / deferred
 
-Core scope is weight/grad/accumulator quantization with **fixed-point** VC. Deferred and
-documented as known gaps (see the [original repo](https://github.com/ruqizhang/low-precision-sgld)):
+Deferred and documented as known gaps (see the
+[original repo](https://github.com/ruqizhang/low-precision-sgld)):
 - **Fully low-precision layers** — activation + backward/error quantization
-  (`models/resnet_low.py`), which need `jax.custom_vjp`.
-- **Block-FP VC** (`fp_Q_vc`) — the paper's CIFAR headline uses block-FP VC; here CIFAR VC
-  uses fixed-point VC, which explains the ~1.5% gap to SGLDLP-F.
+  (`models/resnet_low.py`), which need `jax.custom_vjp`. Current runs quantize
+  weights/grads/accumulator; the layers themselves run in full precision.
 
 ## Tests
 
 ```bash
 JAX_PLATFORMS=cpu PYTHONPATH=. python tests/test_quant.py      # quant primitives
 JAX_PLATFORMS=cpu PYTHONPATH=. python tests/test_gaussian.py   # VC corrects naive bias
+JAX_PLATFORMS=cpu PYTHONPATH=. python tests/test_vc_block.py   # block-FP adaptive grid + unbiased
 JAX_PLATFORMS=cpu PYTHONPATH=. python tests/test_cifar_smoke.py
 PYTHONPATH=. python tests/crosscheck_qtorch.py                 # needs torch+qtorch (GPU)
 ```
