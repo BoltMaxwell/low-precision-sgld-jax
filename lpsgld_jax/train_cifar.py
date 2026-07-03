@@ -24,31 +24,44 @@ import optax
 
 from .data import load_cifar, make_augment
 from .models.resnet import make_resnet18
+from .models.resnet_low import make_resnet18lp
 from .optim_lp import make_lp_update
 from .schedule import build_schedule, save_epochs
 
 
-def make_loss_fn(static):
-    def loss_fn(params, state, x, y):
-        model = eqx.combine(params, static)
-        batched = jax.vmap(model, axis_name="batch", in_axes=(0, None), out_axes=(0, None))
-        logits, new_state = batched(x, state)
-        loss = optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
-        return loss, new_state
+def make_loss_fn(static, lp_layers):
+    if lp_layers:
+        def loss_fn(params, state, x, y, akeys):
+            model = eqx.combine(params, static)
+            batched = jax.vmap(model, axis_name="batch", in_axes=(0, None, 0), out_axes=(0, None))
+            logits, new_state = batched(x, state, akeys)
+            loss = optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
+            return loss, new_state
+    else:
+        def loss_fn(params, state, x, y):
+            model = eqx.combine(params, static)
+            batched = jax.vmap(model, axis_name="batch", in_axes=(0, None), out_axes=(0, None))
+            logits, new_state = batched(x, state)
+            loss = optax.softmax_cross_entropy_with_integer_labels(logits, y).mean()
+            return loss, new_state
 
     return eqx.filter_value_and_grad(loss_fn, has_aux=True)
 
 
-def build_epoch_step(static, augment, schedule_fn, forward_quant, update):
-    grad_fn = make_loss_fn(static)
+def build_epoch_step(static, augment, schedule_fn, forward_quant, update, lp_layers=False):
+    grad_fn = make_loss_fn(static, lp_layers)
 
     def step(carry, inp):
         params, state, key = carry
         step_id, x_raw, y = inp
-        key, k_aug, k_fwd, k_upd = jax.random.split(key, 4)
+        key, k_aug, k_fwd, k_upd, k_act = jax.random.split(key, 5)
         x = augment(k_aug, x_raw)
         fwd_params = forward_quant(k_fwd, params)
-        (loss, state), grads = grad_fn(fwd_params, state, x, y)
+        if lp_layers:
+            akeys = jax.random.split(k_act, x.shape[0])  # per-example activation SR keys
+            (loss, state), grads = grad_fn(fwd_params, state, x, y, akeys)
+        else:
+            (loss, state), grads = grad_fn(fwd_params, state, x, y)
         params = update(k_upd, params, grads, schedule_fn(step_id))
         return (params, state, key), loss
 
@@ -74,6 +87,7 @@ def train(
     wl=8,
     fl=8,
     number="fixed",
+    lp_layers=False,
     lr_type="cyclic",
     M=7,
     num_savemodel=35,
@@ -84,7 +98,12 @@ def train(
 ):
     key = jax.random.key(seed)
     key, model_key = jax.random.split(key)
-    model, state = make_resnet18(model_key, num_classes=data["num_classes"])
+    if lp_layers:
+        # activation/error quantized to the same word length as weights/grads
+        model, state = make_resnet18lp(model_key, num_classes=data["num_classes"],
+                                       wl_act=wl, wl_err=wl)
+    else:
+        model, state = make_resnet18(model_key, num_classes=data["num_classes"])
     params, static = eqx.partition(model, eqx.is_inexact_array)
 
     x_train, y_train = data["x_train"], data["y_train"]
@@ -98,7 +117,7 @@ def train(
     forward_quant, update = make_lp_update(variant, wl, fl, weight_decay=weight_decay,
                                            temperature=temperature, datasize=datasize,
                                            noise=noise, number=number)
-    step = build_epoch_step(static, augment, schedule_fn, forward_quant, update)
+    step = build_epoch_step(static, augment, schedule_fn, forward_quant, update, lp_layers)
     run_epoch = eqx.filter_jit(partial(jax.lax.scan, step))
     to_save = save_epochs(epochs, lr_type, M, num_savemodel, noise)
 
@@ -136,6 +155,8 @@ def main():
     p.add_argument("--wl", type=int, default=8)
     p.add_argument("--fl", type=int, default=8)
     p.add_argument("--number", default="fixed", choices=["fixed", "block"])
+    p.add_argument("--lp_layers", action="store_true",
+                   help="fully low-precision network: also quantize activations (fwd) and errors (bwd)")
     p.add_argument("--lr_type", default="cyclic", choices=["cyclic", "decay"])
     p.add_argument("--M", type=int, default=7)
     p.add_argument("--num_savemodel", type=int, default=35)
@@ -147,7 +168,7 @@ def main():
     train(data, variant=args.variant, dataset=args.dataset, epochs=args.epochs,
           batch_size=args.batch_size, lr_init=args.lr, weight_decay=args.wd,
           temperature=args.temperature, wl=args.wl, fl=args.fl, number=args.number,
-          lr_type=args.lr_type,
+          lp_layers=args.lp_layers, lr_type=args.lr_type,
           M=args.M, num_savemodel=args.num_savemodel, noise=not args.no_noise,
           seed=args.seed, save_dir=args.save_dir)
 

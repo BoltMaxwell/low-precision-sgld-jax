@@ -24,6 +24,8 @@ the cluster cross-check test asserts agreement with the real ``qtorch``.
 
 from typing import NamedTuple, Optional
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 
@@ -122,3 +124,29 @@ def make_quantizer(number, rounding="stochastic"):
     if isinstance(number, FloatingPoint):
         return lambda x, key=None: float_quantize(x, number.exp, number.man, rounding, key)
     raise TypeError(f"unknown number format {number!r}")
+
+
+# --- fully low-precision layers: activation (forward) + error (backward) quant ---
+@partial(jax.custom_vjp, nondiff_argnums=(2, 3, 4))
+def lp_quant(x, key, wl_act, wl_err, rounding):
+    """Block-quantize an activation on the forward pass to ``wl_act`` bits, and the
+    gradient (error) on the backward pass to ``wl_err`` bits (port of
+    ``models/quantizer.py:BlockRounding``). ``wl=-1`` means full precision on that pass.
+    Whole-tensor shared exponent (per example under vmap). ``key`` seeds the stochastic
+    rounding; forward and backward use independent split keys."""
+    k_act, _ = jax.random.split(key)
+    return block_quantize(x, wl_act, rounding, k_act, dim=None) if wl_act != -1 else x
+
+
+def _lp_quant_fwd(x, key, wl_act, wl_err, rounding):
+    k_act, k_err = jax.random.split(key)
+    y = block_quantize(x, wl_act, rounding, k_act, dim=None) if wl_act != -1 else x
+    return y, k_err  # stash the backward key
+
+
+def _lp_quant_bwd(wl_act, wl_err, rounding, k_err, g):
+    gx = block_quantize(g, wl_err, rounding, k_err, dim=None) if wl_err != -1 else g
+    return (gx, None)  # cotangents for (x, key); key gets none
+
+
+lp_quant.defvjp(_lp_quant_fwd, _lp_quant_bwd)
