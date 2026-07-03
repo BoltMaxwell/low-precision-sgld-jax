@@ -90,27 +90,33 @@ variance (std **1.30**); VC corrects it (std **1.00**) — reproducing the paper
 
 **CIFAR-10 / ResNet18**, 8-bit, 245 epochs, ensemble of samples (H100):
 
-| variant | number format | BMA accuracy | error % | ECE % |
+| variant | what's quantized (8-bit) | BMA accuracy | error % | ECE % |
 |---|---|---|---|---|
-| SGLDLP-F (full-precision accumulator) | fixed | **94.79%** | 5.21 | 1.45 |
-| **VC SGLDLP-L** | **block-FP** | **94.66%** | 5.34 | **0.58** |
-| VC SGLDLP-L | fixed | 93.32% | 6.68 | 1.44 |
-| naive SGLDLP-L | fixed | 92.89% | 7.11 | 2.21 |
+| SGLDLP-F | weights/grads (fixed); full-precision accumulator | **94.79%** | 5.21 | 1.45 |
+| VC SGLDLP-L | weights/grads/accumulator (block-FP) | **94.66%** | 5.34 | **0.58** |
+| **VC SGLDLP-L, fully low-precision** | **+ activations & errors — 8-bit everywhere** | **94.55%** | 5.45 | 0.72 |
+| VC SGLDLP-L | weights/grads/accumulator (fixed) | 93.32% | 6.68 | 1.44 |
+| naive SGLDLP-L | weights/grads/accumulator (fixed) | 92.89% | 7.11 | 2.21 |
 
 **Block-FP VC SGLDLP-L matches full-precision-accumulator SGLD** (94.66 vs 94.79%, a
-0.13% gap) with a *low-precision* accumulator — the paper's headline. It also has the
+0.13% gap) with a *low-precision* accumulator — the paper's headline — and has the
 **best calibration** (ECE 0.58%). Block floating point gives each channel a grid matched
-to its own magnitude, closing the ~1.5% gap that fixed-point VC leaves. Across the board,
-**VC beats naive** on accuracy and — the point of the method — calibration (correcting the
-quantization variance yields better-calibrated uncertainty). Select with `--number block`.
+to its own magnitude (`--number block`), closing the ~1.5% gap that fixed-point VC leaves.
 
-## Scope / deferred
+**Fully low-precision** (`--lp_layers`: also quantize activations on the forward pass and
+errors on the backward pass) puts the *entire* network in 8 bits and still reaches 94.55%
+(ECE 0.72%) — only 0.24% below full precision. Across the board, **VC beats naive** on
+accuracy and — the point of the method — calibration (correcting the quantization variance
+yields better-calibrated uncertainty).
 
-Deferred and documented as known gaps (see the
-[original repo](https://github.com/ruqizhang/low-precision-sgld)):
-- **Fully low-precision layers** — activation + backward/error quantization
-  (`models/resnet_low.py`), which need `jax.custom_vjp`. Current runs quantize
-  weights/grads/accumulator; the layers themselves run in full precision.
+## Scope
+
+The core method is fully ported: VC quantization (fixed & block-FP), all three SGLD
+variants, both schedules, and — via `jax.custom_vjp` — the fully low-precision network
+(activation + backward/error quantization, `models/resnet_low.py`). Not yet run: CIFAR-100
+(the code path exists, `--dataset cifar100`) and the original's other architectures.
+For the original PyTorch sources see the
+[original repo](https://github.com/ruqizhang/low-precision-sgld).
 
 ## Tests
 
@@ -118,6 +124,7 @@ Deferred and documented as known gaps (see the
 JAX_PLATFORMS=cpu PYTHONPATH=. python tests/test_quant.py      # quant primitives
 JAX_PLATFORMS=cpu PYTHONPATH=. python tests/test_gaussian.py   # VC corrects naive bias
 JAX_PLATFORMS=cpu PYTHONPATH=. python tests/test_vc_block.py   # block-FP adaptive grid + unbiased
+JAX_PLATFORMS=cpu PYTHONPATH=. python tests/test_lp_layers.py  # activation/error quant (custom_vjp)
 JAX_PLATFORMS=cpu PYTHONPATH=. python tests/test_cifar_smoke.py
 PYTHONPATH=. python tests/crosscheck_qtorch.py                 # needs torch+qtorch (GPU)
 ```
